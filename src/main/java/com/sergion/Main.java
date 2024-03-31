@@ -4,12 +4,14 @@ import org.apache.commons.cli.*;
 
 import java.io.File;
 import java.util.Stack;
+import java.util.concurrent.*;
 
 public class Main {
-    public static void main(String[] args) {
+    private static final int MAX_RESULTS = 100;
+    private static BlockingQueue<String> results = new LinkedBlockingQueue<>();
+    public static void main(String[] args) throws InterruptedException {
 
         //Argument processing
-
         Options options = new Options();
 
         Option rootPathOption = new Option("p", "rootPath", true, "Root path of the directory");
@@ -41,8 +43,24 @@ public class Main {
         int depth = Integer.parseInt(cmd.getOptionValue("depth"));
         String mask = cmd.getOptionValue("mask");
 
-        //File search
+        //Threads
 
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        Future<?> searchFuture = executor.submit(() -> searchFiles(rootPath, depth, mask));
+        Future<?> printFuture = executor.submit(Main::printResults);
+
+        try {
+            searchFuture.get();
+            printFuture.get();
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
+        }
+
+        executor.shutdown();
+
+    }
+
+    private static void searchFiles(String rootPath, int depth, String mask) {
         Stack<File> stack = new Stack<>();
         stack.push(new File(rootPath));
 
@@ -59,11 +77,27 @@ public class Main {
                 }
             } else {
                 if (currentDir.getName().contains(mask)) {
-                    System.out.println(currentDir.getAbsolutePath());
+                    try {
+                        results.put(currentDir.getAbsolutePath());
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
             }
         }
+    }
 
+    private static void printResults() {
+        int count = 0;
+        while (count < MAX_RESULTS) {
+            try {
+                String result = results.take();
+                System.out.println(result);
+                count++;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     private static int getDepth(String rootPath, File file) {
