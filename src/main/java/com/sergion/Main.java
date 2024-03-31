@@ -1,101 +1,114 @@
 package com.sergion;
 
-import org.apache.commons.cli.*;
-
-import java.io.File;
+import java.io.*;
+import java.net.*;
 import java.util.Stack;
 import java.util.concurrent.*;
 
 public class Main {
-    private static final int MAX_RESULTS = 100;
-    private static BlockingQueue<String> results = new LinkedBlockingQueue<>();
-    public static void main(String[] args) throws InterruptedException {
+    private static final int MAX_CLIENTS = 6;
 
-        //Argument processing
-        Options options = new Options();
-
-        Option rootPathOption = new Option("p", "rootPath", true, "Root path of the directory");
-        rootPathOption.setRequired(true);
-        options.addOption(rootPathOption);
-
-        Option depthOption = new Option("d", "depth", true, "Depth of search (non-negative integer)");
-        depthOption.setRequired(true);
-        options.addOption(depthOption);
-
-        Option maskOption = new Option("m", "mask", true, "String mask to search");
-        maskOption.setRequired(true);
-        options.addOption(maskOption);
-
-        CommandLineParser parser = new DefaultParser();
-        HelpFormatter formatter = new HelpFormatter();
-        CommandLine cmd;
-
-        try {
-            cmd = parser.parse(options, args);
-        } catch (ParseException e) {
-            System.out.println(e.getMessage());
-            formatter.printHelp("FileSearch", options);
+    public static void main(String[] args) {
+        if (args.length != 2) {
+            System.err.println("Usage: FileSearchTelnetServer <serverPort> <rootPath>");
             System.exit(1);
-            return;
         }
 
-        String rootPath = cmd.getOptionValue("rootPath");
-        int depth = Integer.parseInt(cmd.getOptionValue("depth"));
-        String mask = cmd.getOptionValue("mask");
+        int serverPort = Integer.parseInt(args[0]);
+        String rootPath = args[1];
 
-        //Threads
+        try (ServerSocket serverSocket = new ServerSocket(serverPort)) {
+            System.out.println("Telnet server is running on port " + serverPort);
 
-        ExecutorService executor = Executors.newFixedThreadPool(2);
-        Future<?> searchFuture = executor.submit(() -> searchFiles(rootPath, depth, mask));
-        Future<?> printFuture = executor.submit(Main::printResults);
+            ExecutorService executor = Executors.newFixedThreadPool(MAX_CLIENTS);
 
-        try {
-            searchFuture.get();
-            printFuture.get();
-        } catch (InterruptedException | ExecutionException e) {
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                System.out.println("Accepted connection from " + clientSocket.getInetAddress() + " with name: user" + clientSocket.getInetAddress().hashCode());
+
+                ClientHandler clientHandler = new ClientHandler(clientSocket, rootPath);
+                executor.execute(clientHandler);
+            }
+        } catch (IOException e) {
             e.printStackTrace();
         }
-
-        executor.shutdown();
-
     }
 
-    private static void searchFiles(String rootPath, int depth, String mask) {
-        Stack<File> stack = new Stack<>();
-        stack.push(new File(rootPath));
+    static class ClientHandler implements Runnable {
+        private final Socket clientSocket;
+        private final String rootPath;
+        private final Object lock = new Object();
 
-        while (!stack.isEmpty()) {
-            File currentDir = stack.pop();
-            if (currentDir.isDirectory()) {
-                if (getDepth(rootPath, currentDir) <= depth) {
-                    File[] files = currentDir.listFiles();
-                    if (files != null) {
-                        for (File file : files) {
-                            stack.push(file);
-                        }
+        ClientHandler(Socket clientSocket, String rootPath) {
+            this.clientSocket = clientSocket;
+            this.rootPath = rootPath;
+        }
+
+        @Override
+        public void run() {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+                 PrintWriter writer = new PrintWriter(clientSocket.getOutputStream(), true)) {
+
+                String inputLine;
+                while ((inputLine = reader.readLine()) != null) {
+                    if (inputLine.equalsIgnoreCase("quit")) {
+                        break;
                     }
+
+                    String[] tokens = inputLine.split(" ");
+                    if (tokens.length != 2) {
+                        writer.println("Invalid command. Please specify depth and mask separated by space.");
+                        continue;
+                    }
+
+                    int depth = Integer.parseInt(tokens[0]);
+                    String mask = tokens[1];
+
+                    String searchResult = performFileSearch(clientSocket, depth, mask);
+                    writer.println(searchResult);
+
                 }
-            } else {
-                if (currentDir.getName().contains(mask)) {
-                    try {
-                        results.put(currentDir.getAbsolutePath());
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } finally {
+                try {
+                    clientSocket.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
                 }
             }
         }
-    }
 
-    private static void printResults() {
-        int count = 0;
-        while (count < MAX_RESULTS) {
-            try {
-                String result = results.take();
-                System.out.println(result);
-                count++;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        private String performFileSearch(Socket clientSocket, int depth, String mask) throws InterruptedException {
+            synchronized (lock) {
+                StringBuilder result = new StringBuilder();
+                Stack<File> stack = new Stack<>();
+                stack.push(new File(rootPath));
+
+                result.append("Performing search in directory: ").append(rootPath).append("\n");
+                result.append("Depth: ").append(depth).append("\n");
+                result.append("Mask: ").append(mask).append("\n");
+
+                while (!stack.isEmpty()) {
+                    File currentDir = stack.pop();
+                    if (currentDir.isDirectory()) {
+                        if (getDepth(rootPath, currentDir) <= depth) {
+                            File[] files = currentDir.listFiles();
+                            if (files != null) {
+                                for (File file : files) {
+                                    stack.push(file);
+                                }
+                            }
+                        }
+                    } else {
+                        if (currentDir.getName().contains(mask)) {
+                            result.append(currentDir.getAbsolutePath()).append("\n");
+                        }
+                    }
+                }
+                return result.toString();
             }
         }
     }
