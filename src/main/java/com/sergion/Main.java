@@ -64,7 +64,7 @@ public class Main {
                     int depth = Integer.parseInt(tokens[0]);
                     String mask = tokens[1];
 
-                    String searchResult = performFileSearch(clientSocket, depth, mask);
+                    String searchResult = performFileSearch(depth, mask);
                     writer.println(searchResult);
 
                 }
@@ -81,7 +81,7 @@ public class Main {
             }
         }
 
-        private String performFileSearch(Socket clientSocket, int depth, String mask) throws InterruptedException {
+        private String performFileSearch(int depth, String mask) throws InterruptedException {
             synchronized (lock) {
                 StringBuilder result = new StringBuilder();
                 Stack<File> stack = new Stack<>();
